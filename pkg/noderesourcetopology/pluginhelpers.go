@@ -23,6 +23,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	informerv1 "k8s.io/client-go/informers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
@@ -55,8 +57,11 @@ func initNodeTopologyInformer(tcfg *apiconfig.NodeResourceTopologyMatchArgs, han
 		return nrtcache.NewPassthrough(nodeTopologyLister), nil
 	}
 
-	podSharedInformer := nrtcache.InformerFromHandle(handle)
-	podIndexer := nrtcache.NewNodeNameIndexer(podSharedInformer)
+	podInformer := handle.SharedInformerFactory().Core().V1().Pods()
+	podIndexer, err := newNodeNameIndexer(podInformer)
+	if err != nil {
+		return nil, err
+	}
 	nrtCache, err := nrtcache.NewOverReserve(nodeTopologyLister, podIndexer)
 	if err != nil {
 		return nil, err
@@ -66,7 +71,7 @@ func initNodeTopologyInformer(tcfg *apiconfig.NodeResourceTopologyMatchArgs, han
 		profileName := fwk.ProfileName()
 		klog.InfoS("setting up foreign pods detection", "name", profileName)
 		nrtcache.RegisterSchedulerProfileName(profileName)
-		nrtcache.SetupForeignPodsDetector(profileName, podSharedInformer, nrtCache)
+		nrtcache.SetupForeignPodsDetector(profileName, podInformer.Informer(), nrtCache)
 	} else {
 		klog.Warningf("cannot determine the scheduler profile names - no foreign pod detection enabled")
 	}
@@ -108,4 +113,33 @@ func extractResources(zone topologyv1alpha2.Zone) corev1.ResourceList {
 		res[corev1.ResourceName(resInfo.Name)] = resInfo.Available.DeepCopy()
 	}
 	return res
+}
+
+func newNodeNameIndexer(podInformer informerv1.PodInformer) (cache.Indexer, error) {
+	err := podInformer.Informer().GetIndexer().AddIndexers(cache.Indexers{
+		nrtcache.NodeNameIndexer: func(obj interface{}) ([]string, error) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				return []string{}, nil
+			}
+			if len(pod.Spec.NodeName) == 0 {
+				return []string{}, nil
+			}
+			return []string{pod.Spec.NodeName}, nil
+		},
+		nrtcache.PodUIDIndexer: func(obj interface{}) ([]string, error) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				return []string{}, nil
+			}
+			if len(pod.UID) == 0 {
+				return []string{}, nil
+			}
+			return []string{string(pod.UID)}, nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return podInformer.Informer().GetIndexer(), nil
 }

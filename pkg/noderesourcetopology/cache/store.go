@@ -21,6 +21,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
@@ -29,6 +30,11 @@ import (
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
 
 	"github.com/k8stopologyawareschedwg/podfingerprint"
+)
+
+const (
+	NodeNameIndexer = "nodeName"
+	PodUIDIndexer   = "podUID"
 )
 
 // nrtStore maps the NRT data by node name. It is not thread safe and needs to be protected by a lock.
@@ -207,16 +213,17 @@ func podFingerprintForNodeTopology(nrt *topologyv1alpha2.NodeResourceTopology) s
 // checkPodFingerprintForNode verifies if the given pods fingeprint (usually from NRT update) matches the
 // computed one using the stored data about pods running on nodes. Returns nil on success, or an error
 // describing the failure
-func checkPodFingerprintForNode(logID string, indexer NodeIndexer, nodeName, pfpExpected string) error {
-	objs, err := indexer.GetPodNamespacedNamesByNode(logID, nodeName)
+func checkPodFingerprintForNode(logID string, indexer cache.Indexer, nodeName, pfpExpected string) error {
+	objs, err := indexer.ByIndex(NodeNameIndexer, nodeName)
 	if err != nil {
-		return err
+		return nil
 	}
 
 	var st podfingerprint.Status
 	pfp := podfingerprint.NewTracingFingerprint(len(objs), &st)
 	for _, obj := range objs {
-		pfp.Add(obj.Namespace, obj.Name)
+		pod := obj.(*corev1.Pod)
+		pfp.Add(pod.Namespace, pod.Name)
 	}
 	pfpComputed := pfp.Sign()
 

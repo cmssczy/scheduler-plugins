@@ -24,9 +24,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	k8scache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	topologyv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha2"
 	listerv1alpha2 "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/generated/listers/topology/v1alpha2"
@@ -45,10 +44,11 @@ type OverReserve struct {
 	nodesMaybeOverreserved counter
 	nodesWithForeignPods   counter
 	nrtLister              listerv1alpha2.NodeResourceTopologyLister
-	nodeIndexer            NodeIndexer
+	// nodeIndexer            NodeIndexer
+	nodeIndexer cache.Indexer
 }
 
-func NewOverReserve(lister listerv1alpha2.NodeResourceTopologyLister, indexer NodeIndexer) (*OverReserve, error) {
+func NewOverReserve(lister listerv1alpha2.NodeResourceTopologyLister, indexer cache.Indexer) (*OverReserve, error) {
 	if lister == nil || indexer == nil {
 		return nil, fmt.Errorf("nrtcache: received nil references")
 	}
@@ -123,8 +123,6 @@ func (ov *OverReserve) ReserveNodeResources(nodeName string, pod *corev1.Pod) {
 	nodeAssumedResources.AddPod(pod)
 	klog.V(5).InfoS("nrtcache post reserve", "logID", klog.KObj(pod), "node", nodeName, "assumedResources", nodeAssumedResources.String())
 
-	ov.nodeIndexer.TrackReservedPod(pod, nodeName)
-
 	ov.nodesMaybeOverreserved.Delete(nodeName)
 	klog.V(6).InfoS("nrtcache: reset discard counter", "logID", klog.KObj(pod), "node", nodeName)
 }
@@ -142,8 +140,6 @@ func (ov *OverReserve) UnreserveNodeResources(nodeName string, pod *corev1.Pod) 
 
 	nodeAssumedResources.DeletePod(pod)
 	klog.V(5).InfoS("nrtcache post release", "logID", klog.KObj(pod), "node", nodeName, "assumedResources", nodeAssumedResources.String())
-
-	ov.nodeIndexer.UntrackReservedPod(pod, nodeName)
 }
 
 // NodesMaybeOverReserved returns a slice of all the node names which have been discarded previously,
@@ -247,10 +243,6 @@ func (ov *OverReserve) FlushNodes(logID string, nrts ...*topologyv1alpha2.NodeRe
 		ov.nodesMaybeOverreserved.Delete(nrt.Name)
 		ov.nodesWithForeignPods.Delete(nrt.Name)
 	}
-}
-
-func InformerFromHandle(handle framework.Handle) k8scache.SharedInformer {
-	return handle.SharedInformerFactory().Core().V1().Pods().Informer()
 }
 
 // to be used only in tests
